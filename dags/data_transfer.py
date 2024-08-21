@@ -23,8 +23,8 @@ import smtplib
 # setting the time as indian standard time. We have to set this if we want to schedule a pipeline 
 time_zone = pendulum.timezone("Asia/Kolkata")
 
-def send_alert(context):
-    print('Task failed sending an Email')
+def send_alert(context, dest_row_count=None, sour_row_count=None):
+    print('Task failed or row count mismatch detected. Sending an email alert.')
     task_instance = context.get('task_instance')
     task_id = task_instance.task_id
     dag_id = context.get('dag').dag_id
@@ -32,26 +32,32 @@ def send_alert(context):
     exception = context.get('exception')
     No_of_retries = default_args['retries']
     retry_delay = default_args['retry_delay']
-    error_message = str(exception)
+    error_message = str(exception) if exception else "Row count mismatch detected."
 
-    subject = f'Airflow Alert: Task Failure in {dag_id}'
+    subject = f'Airflow Alert: Task Failure or Row Mismatch in {dag_id}'
     body = f"""
     <br>Task ID: {task_id}</br>
     <br>DAG ID: {dag_id}</br>
     <br>Execution Date: {execution_date}</br>
     <br>Retries: {No_of_retries}</br>
-    <br>Delay_between_retry: {retry_delay}</br>
-    <br>Task failed and retries exhausted. Manual intervention required.</br>
+    <br>Delay between retry: {retry_delay}</br>
+    <br>Error: {error_message}</br>
     """
-    
-    # Using Airflow's send_email function for consistency and better integration
+    if dest_row_count is not None and sour_row_count is not None:
+        body += f"""
+        <br>Source Row Count: {sour_row_count}</br>
+        <br>Destination Row Count: {dest_row_count}</br>
+        """
+
+    # Send email using Airflow's send_email function
     send_email(
         to='gauravnagraleofficial@gmail.com',
         subject=subject,
         html_content=body
     )
 
-    log_failure_to_db(task_id, dag_id, execution_date, error_message,No_of_retries)
+    # Log the failure to the database
+    log_failure_to_db(task_id, dag_id, execution_date, error_message, No_of_retries)
 
 def send_success_alert(context):
     print('Task succeeded sending a notification')
@@ -62,7 +68,7 @@ def send_success_alert(context):
     success_message = f'Task {task_id} in DAG {dag_id} succeeded on {execution_date}.'
     log_success_to_db(task_id, dag_id, execution_date, success_message)
 
-
+# this is where we are sending the data to success table
 def log_success_to_db(task_id, dag_id, execution_date, success_message):
     hook = PostgresHook(postgres_conn_id='destination_conn_id')
     insert_sql = """
@@ -72,6 +78,7 @@ def log_success_to_db(task_id, dag_id, execution_date, success_message):
     hook.run(insert_sql, parameters=(task_id, dag_id, execution_date, success_message))
 
 
+# this is where we are sending the data to fail table
 def log_failure_to_db(task_id, dag_id, execution_date, error_message,No_of_retries):
     hook = PostgresHook(postgres_conn_id='destination_conn_id')
     insert_sql = """
@@ -80,11 +87,12 @@ def log_failure_to_db(task_id, dag_id, execution_date, error_message,No_of_retri
     """
     hook.run(insert_sql, parameters=(task_id, dag_id, execution_date, error_message,No_of_retries))
 
+# this is where we are extracting the data and comparing the row count of source and destination
 def print_data(**kwargs):
     sql_query1 = ''' 
         select count(*) as dest_row_count
-        from opd_count
-        where TRUNC(date) = TRUNC(SYSDATE);
+        from opd_count                            
+        where TRUNC(date)=Trunc(sysdate)
     '''
 
     sql_query2 = ''' 
@@ -92,19 +100,18 @@ def print_data(**kwargs):
         from hrgt_episode_dtl
         where gnum_isvalid = 1
         and gnum_hospital_code = 22914
-        --and TRUNC(gdt_entry_date) = TRUNC(SYSDATE);
+        and TRUNC(gdt_entry_date) = TRUNC(SYSDATE);
     '''
     
     dest_hook_dest = PostgresHook(postgres_conn_id='destination_conn_id', schema='Airflow_destination')
     sour_hook_dest = PostgresHook(postgres_conn_id='aiimsnew_conn', schema='aiimsnew')
 
-    dest_row_count = dest_hook_dest.get_records(sql_query1)[0]
-    sour_row_count = sour_hook_dest.get_records(sql_query2)[0]
+    dest_row_count = dest_hook_dest.get_records(sql_query1)[0][0]
+    sour_row_count = sour_hook_dest.get_records(sql_query2)[0][0]
 
-    logging.info(f"Query result: {dest_row_count}")
-    logging.info(f"Query result: {sour_row_count}")
+    logging.info(f"Destination row count: {dest_row_count}")
+    logging.info(f"Source row count: {sour_row_count}")
 
-    
     # Get execution date from kwargs and convert it to the desired time zone
     execution_date = kwargs['execution_date']
     execution_date_kolkata = execution_date.astimezone(time_zone)
@@ -114,18 +121,19 @@ def print_data(**kwargs):
 
     # Insert row counts into air_row_count table
     insert_sql = '''
-    INSERT INTO air_row_count (execution_date,Destination_row, Source_row)
+    INSERT INTO air_row_count (execution_date, Destination_row, Source_row)
     VALUES (%s, %s, %s);
     '''
-    dest_hook_dest.run(insert_sql, parameters=(execution_date_str, sour_row_count, dest_row_count))
+    dest_hook_dest.run(insert_sql,parameters=(execution_date_str, dest_row_count, sour_row_count))
 
-    if sour_row_count!=dest_row_count:
-        send_alert(kwargs)
+    # Compare row counts and trigger an alert if there's a mismatch
+    if dest_row_count != sour_row_count:
+        logging.error('Row count mismatch detected')
+        send_alert(kwargs, dest_row_count, sour_row_count)
     else:
-        logging.info('The Rows are same')
+        logging.info('The row counts match')
 
-    return dest_row_count,sour_row_count
-    
+    return dest_row_count, sour_row_count
 
 # Default arguments for the DAG
 default_args = {
@@ -147,7 +155,7 @@ with DAG(
         catchup=False
     ) as dag:
 
-    # creating the table source table 
+    # creating the required table at destination
     create_table = PostgresOperator(
         task_id='create_table',
         postgres_conn_id='destination_conn_id',
@@ -193,7 +201,7 @@ with DAG(
         dag = dag
     )
 
-
+    # this is the row-compare task
     compare_count = PythonOperator(
         task_id='compare_row',
         provide_context=True,
