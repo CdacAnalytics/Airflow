@@ -43,7 +43,7 @@ def send_alert(context, dest_row_count=None, sour_row_count=None):
     <br>Delay between retry: {retry_delay}</br>
     <br>Error: {error_message}</br>
     """
-    if dest_row_count is not None and sour_row_count is not None:
+    if (dest_row_count is not None and sour_row_count is not None) or (dest_row_count != sour_row_count):
         body += f"""
         <br>Source Row Count: {sour_row_count}</br>
         <br>Destination Row Count: {dest_row_count}</br>
@@ -100,7 +100,7 @@ def print_data(**kwargs):
         from hrgt_episode_dtl
         where gnum_isvalid = 1
         and gnum_hospital_code = 22914
-        and TRUNC(gdt_entry_date) = TRUNC(SYSDATE);
+        --and TRUNC(gdt_entry_date) = TRUNC(SYSDATE);
     '''
     
     dest_hook_dest = PostgresHook(postgres_conn_id='destination_conn_id', schema='Airflow_destination')
@@ -173,7 +173,7 @@ with DAG(
     # with clause specifies that the format for the output should be saved as CSV 
     # and this data is stored in container running in docker
     # the data will be lost once the container is stopped or removed
-
+# NOTE: copy command is not going to work at the UAT and PROD thats y we have function
     transfer_data = PostgresOperator(
         task_id='transfer_data',
         postgres_conn_id='postgres',
