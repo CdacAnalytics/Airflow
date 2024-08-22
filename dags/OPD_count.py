@@ -9,19 +9,21 @@ from airflow.operators.generic_transfer import GenericTransfer
 from airflow.operators.mysql_operator import MySqlOperator
 from airflow.operators.python_operator import PythonOperator
 from airflow.utils.trigger_rule import TriggerRule
+
 import logging
 import csv
 from datetime import datetime, timedelta
 import pendulum
 from airflow.utils.email import send_email
-
+from email.mime.text import MIMEText
+import smtplib
+import psycopg2
 
 
 
 # setting the time as indian standard time. We have to set this if we want to schedule a pipeline 
 time_zone = pendulum.timezone("Asia/Kolkata")
 
-# if the destination and source row count does not match then there will be None present
 def send_alert(context, dest_row_count=None, sour_row_count=None):
     print('Task failed sending an Email')
     task_instance = context.get('task_instance')
@@ -42,7 +44,7 @@ def send_alert(context, dest_row_count=None, sour_row_count=None):
     <br>Delay_between_retry: {retry_delay}</br>
     <br>Task failed and retries exhausted. Manual intervention required.</br>
     """
-    if dest_row_count is not None and sour_row_count is not None:
+    if (dest_row_count is not None and sour_row_count is not None) or (dest_row_count != sour_row_count):
         body += f"""
         <br>Source Row Count: {sour_row_count}</br>
         <br>Destination Row Count: {dest_row_count}</br>
@@ -144,16 +146,46 @@ def export_data_to_csv():
                count(hrgnum_puk) as OPD_count
         FROM hrgt_episode_dtl
         WHERE gnum_isvalid = 1
-        AND gnum_hospital_code = 22914
-        and trunc(gdt_entry_date) = trunc(sysdate)
+        AND gnum_hospital_code = 98926
+        and trunc(gdt_entry_date) = trunc(sysdate)-10
         GROUP BY trunc(gdt_entry_date);
     """
     cursor.execute(query)
     rows = cursor.fetchall()
+    # writing the data and after the transfer the data is deleted
     with open('/tmp/staging_data.csv', 'w') as f:
         writer = csv.writer(f)
         writer.writerow(['Date', 'OPD_count'])
-        writer.writerows(rows)    
+        writer.writerows(rows)
+    
+    with open('/tmp/staging_data.csv', 'r') as file:
+        read = csv.reader(file)
+        print('printing the rows:')
+        for rows in read:
+            print(rows)
+
+def load_csv_to_postgres():
+    conn = psycopg2.connect(
+        dbname="Airflow_destination",
+        user="aiimsnew",
+        password="aiimsnew",
+        host="10.226.80.35",
+        port="5445"
+    )
+    cursor = conn.cursor()
+    
+    with open('/tmp/staging_data.csv', 'r') as f:
+        reader = csv.reader(f)
+        next(reader)  # Skip header row
+        for row in reader:
+            cursor.execute(
+                "INSERT INTO OPD_count (Date, OPD_count) VALUES (%s, %s)",
+                row
+            )
+    
+    conn.commit()
+    cursor.close()
+    conn.close()
     
 
 # Default arguments for the DAG
@@ -190,26 +222,24 @@ with DAG(
         dag = dag
     )
 
+    # Extracting the data from source and loading it into the staging area
     export_task = PythonOperator(
-    task_id='export_data_to_csv',
-    python_callable=export_data_to_csv,
-    dag=dag
+        task_id='export_data_to_csv',
+        python_callable=export_data_to_csv,
+        dag=dag
     )
 
-    #Note: the temp folder is present inside the test-airflow-postgres-1 /bin/bash
-    load_data = PostgresOperator(
+    load_data = PythonOperator(
         task_id='load_data',
-        postgres_conn_id='destination_conn_id',
-        sql='''
-        COPY OPD_count (Date, OPD_count)
-        FROM '/tmp/staging_data.csv' WITH CSV;
-        ''',
-        dag = dag
+        python_callable=load_csv_to_postgres,
+        dag=dag
     )
+
 
     compare_count = PythonOperator(
         task_id='compare_row',
         provide_context=True,
         python_callable=print_data
     )
+
     create_table >> export_task >> load_data >> compare_count 
