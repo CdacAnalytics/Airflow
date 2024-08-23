@@ -248,5 +248,4 @@ with DAG(
         python_callable=print_data,
         on_success_callback=send_success_alert
     )
-
     create_table >> export_task >> load_data >> compare_count 
