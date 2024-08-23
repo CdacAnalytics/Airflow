@@ -33,6 +33,7 @@ def send_alert(context, dest_row_count=None, sour_row_count=None):
     exception = context.get('exception')
     No_of_retries = default_args['retries']
     retry_delay = default_args['retry_delay']
+    hospital_name = 'Aiims_kalyani'
     error_message = str(exception)
 
     subject = f'Airflow Alert: Task Failure in {dag_id}'
@@ -44,7 +45,7 @@ def send_alert(context, dest_row_count=None, sour_row_count=None):
     <br>Delay_between_retry: {retry_delay}</br>
     <br>Task failed and retries exhausted. Manual intervention required.</br>
     """
-    if (dest_row_count is not None and sour_row_count is not None) or (dest_row_count != sour_row_count):
+    if dest_row_count is not None and sour_row_count is not None:
         body += f"""
         <br>Source Row Count: {sour_row_count}</br>
         <br>Destination Row Count: {dest_row_count}</br>
@@ -57,7 +58,7 @@ def send_alert(context, dest_row_count=None, sour_row_count=None):
         html_content=body
     )
 
-    log_failure_to_db(task_id, dag_id, execution_date, error_message,No_of_retries)
+    log_failure_to_db(task_id, dag_id, execution_date, error_message,No_of_retries,hospital_name)
 
 def send_success_alert(context):
     print('Task succeeded sending a notification')
@@ -65,40 +66,44 @@ def send_success_alert(context):
     task_id = task_instance.task_id
     dag_id = context.get('dag').dag_id
     execution_date = context.get('execution_date')
+    hospital_name = 'Aiims_Kalyani'
     success_message = f'Task {task_id} in DAG {dag_id} succeeded on {execution_date}.'
-    log_success_to_db(task_id, dag_id, execution_date, success_message)
+    log_success_to_db(task_id, dag_id, execution_date, success_message,hospital_name)
 
 
-def log_success_to_db(task_id, dag_id, execution_date, success_message):
+def log_success_to_db(task_id, dag_id, execution_date, success_message,hospital_name):
     hook = PostgresHook(postgres_conn_id='destination_conn_id')
     insert_sql = """
-    INSERT INTO air_dag_success (task_id, dag_id, execution_date, success_message)
-    VALUES (%s, %s, %s, %s);
-    """
-    hook.run(insert_sql, parameters=(task_id, dag_id, execution_date, success_message))
-
-
-def log_failure_to_db(task_id, dag_id, execution_date, error_message,No_of_retries):
-    hook = PostgresHook(postgres_conn_id='destination_conn_id')
-    insert_sql = """
-    INSERT INTO air_dag_fail (task_id, dag_id, execution_date, error_message,retry_count)
+    INSERT INTO air_dag_success (task_id, dag_id, execution_date, success_message,hospital_name)
     VALUES (%s, %s, %s, %s,%s);
     """
-    hook.run(insert_sql, parameters=(task_id, dag_id, execution_date, error_message,No_of_retries))
+    hook.run(insert_sql, parameters=(task_id, dag_id, execution_date, success_message,hospital_name))
+
+
+def log_failure_to_db(task_id, dag_id, execution_date, error_message,No_of_retries,hospital_name):
+    hook = PostgresHook(postgres_conn_id='destination_conn_id')
+    insert_sql = """
+    INSERT INTO air_dag_fail (task_id, dag_id, execution_date, error_message,retry_count,hospital_name)
+    VALUES (%s, %s, %s, %s,%s,%s);
+    """
+    hook.run(insert_sql, parameters=(task_id, dag_id, execution_date, error_message,No_of_retries,hospital_name))
 
 def print_data(**kwargs):
     sql_query1 = ''' 
         select count(*) as dest_row_count
         from opd_count
-        where TRUNC(date) = TRUNC(SYSDATE);
+        where TRUNC(date) = TRUNC(SYSDATE)-1;
     '''
 
-    sql_query2 = ''' 
-        select count(hrgnum_puk) as source_row_count
-        from hrgt_episode_dtl
-        where gnum_isvalid = 1
-        and gnum_hospital_code = 98926
-        and TRUNC(gdt_entry_date) = TRUNC(SYSDATE);
+    sql_query2 = '''       
+        with data as (
+            select count(hrgnum_puk) 
+            from hrgt_episode_dtl
+            where gnum_isvalid = 1
+            and gnum_hospital_code = 22914
+            and TRUNC(gdt_entry_date) = TRUNC(SYSDATE)-1
+        )
+        select count(*) as Source_row_count from data;
     '''
     
     dest_hook_dest = PostgresHook(postgres_conn_id='destination_conn_id', schema='Airflow_destination')
@@ -142,13 +147,16 @@ def export_data_to_csv():
     conn = pg_hook.get_conn()
     cursor = conn.cursor()
     query = """
-        SELECT trunc(gdt_entry_date) as Date,
-               count(hrgnum_puk) as OPD_count
-        FROM hrgt_episode_dtl
-        WHERE gnum_isvalid = 1
-        AND gnum_hospital_code = 98926
-        and trunc(gdt_entry_date) = trunc(sysdate)-10
-        GROUP BY trunc(gdt_entry_date);
+        SELECT trunc(E.gdt_entry_date) as Date,
+                count(E.hrgnum_puk) as OPD_count,
+		        gstr_hosp_short_name as Hospital_name
+        FROM hrgt_episode_dtl E, gblt_hospital_mst H
+        WHERE H.gnum_hospital_code = E.gnum_hospital_code
+        and E.gnum_isvalid = 1
+        and H.gnum_isvalid = 1
+        and E.gnum_hospital_code = 22914
+        and trunc(E.gdt_entry_date) = trunc(sysdate)-10
+        GROUP BY trunc(E.gdt_entry_date),Hospital_name;
     """
     cursor.execute(query)
     rows = cursor.fetchall()
@@ -179,7 +187,7 @@ def load_csv_to_postgres():
         next(reader)  # Skip header row
         for row in reader:
             cursor.execute(
-                "INSERT INTO OPD_count (Date, OPD_count) VALUES (%s, %s)",
+                "INSERT INTO OPD_count (Date, OPD_count,Hospital_name) VALUES (%s, %s, %s)",
                 row
             )
     
@@ -195,7 +203,6 @@ default_args = {
     'retries': 1,
     'retry_delay': timedelta(minutes=1),
     'on_failure_callback': send_alert,
-    'on_success_callback': send_success_alert
 }
 
 # Define the DAG
@@ -235,11 +242,11 @@ with DAG(
         dag=dag
     )
 
-
     compare_count = PythonOperator(
         task_id='compare_row',
         provide_context=True,
-        python_callable=print_data
+        python_callable=print_data,
+        on_success_callback=send_success_alert
     )
 
     create_table >> export_task >> load_data >> compare_count 
