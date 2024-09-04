@@ -44,6 +44,7 @@ def send_alert(context, dest_row_count=None, sour_row_count=None):
     <br>Retries: {No_of_retries}</br>
     <br>Delay_between_retry: {retry_delay}</br>
     <br>Task failed and retries exhausted. Manual intervention required.</br>
+    <br>Hospital Name: {hospital_name}</br>
     """
     if dest_row_count is not None and sour_row_count is not None:
         body += f"""
@@ -130,6 +131,7 @@ def print_data(**kwargs):
     '''
     dest_hook_dest.run(insert_sql, parameters=(execution_date_str, sour_row_count, dest_row_count))
 
+
     if sour_row_count!=dest_row_count:
         send_alert(kwargs)
     else:
@@ -155,7 +157,7 @@ def export_data_to_csv():
         and E.gnum_isvalid = 1
         and H.gnum_isvalid = 1
         and E.gnum_hospital_code = 22914
-        and trunc(E.gdt_entry_date) = trunc(sysdate)-10
+        and trunc(E.gdt_entry_date) = trunc(sysdate)-1
         GROUP BY trunc(E.gdt_entry_date),Hospital_name;
     """
     cursor.execute(query)
