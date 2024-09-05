@@ -12,6 +12,8 @@ from airflow.utils.email import send_email
 from email.mime.text import MIMEText
 import smtplib
 import psycopg2
+from airflow.utils.dates import days_ago
+
 
 # setting the time as indian standard time. We have to set this if we want to schedule a pipeline 
 time_zone = pendulum.timezone("Asia/Kolkata")
@@ -85,7 +87,7 @@ def log_failure_to_db(task_id, dag_id, execution_date, error_message,No_of_retri
 
 
 def export_data_staging(**kwargs):
-    pg_hook = PostgresHook(postgres_conn_id='postgres',schema = 'aiimsnew')
+    pg_hook = PostgresHook(postgres_conn_id='Mang_UAT_source_conn',schema = 'aiims_manglagiri')
     destination_hook = PostgresHook(postgres_conn_id='abdm_uat_connection', schema='abdm')
     conn = pg_hook.get_conn()
     cursor = conn.cursor()
@@ -219,8 +221,9 @@ with DAG(
         dag_id="Test_count",
         default_args=default_args,
         description="Transferring the data from UAT to Opensource DB",
-        schedule_interval='0 0 * * *',  # Schedule interval set to every day at midnight
+        schedule_interval= '@monthly',
         # 5 - Mins , 11-Hours ,* - any day of week ,*- any month,*-any day of week 
+        # start_date=days_ago(1),
         catchup=False
     ) as dag:
 

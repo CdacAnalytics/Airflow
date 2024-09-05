@@ -84,7 +84,7 @@ def log_failure_to_db(task_id, dag_id, execution_date, error_message,No_of_retri
     hook.run(insert_sql, parameters=(task_id, dag_id, execution_date, error_message,No_of_retries))
 
 def export_data_staging(**kwargs):
-    pg_hook = PostgresHook(postgres_conn_id='postgres',schema = 'aiimsnew')
+    pg_hook = PostgresHook(postgres_conn_id='Mang_UAT_source_conn',schema = 'aiims_manglagiri')
     destination_hook = PostgresHook(postgres_conn_id='abdm_uat_connection', schema='abdm')
     conn = pg_hook.get_conn()
     cursor = conn.cursor()

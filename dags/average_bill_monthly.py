@@ -69,7 +69,7 @@ def send_success_alert(context):
 def log_success_to_db(task_id, dag_id, execution_date, success_message):
     hook = PostgresHook(postgres_conn_id='abdm_uat_connection')
     insert_sql = """
-    INSERT INTO airflow_test.air_admdisc_success (task_id, dag_id, execution_date, success_message)
+    INSERT INTO airflow_test.air_total_Avg_bill_success (task_id, dag_id, execution_date, success_message)
     VALUES (%s, %s, %s, %s);
     """
     hook.run(insert_sql, parameters=(task_id, dag_id, execution_date, success_message))
@@ -78,42 +78,31 @@ def log_success_to_db(task_id, dag_id, execution_date, success_message):
 def log_failure_to_db(task_id, dag_id, execution_date, error_message,No_of_retries):
     hook = PostgresHook(postgres_conn_id='abdm_uat_connection')
     insert_sql = """
-    INSERT INTO airflow_test.air_admdisc_fail (task_id, dag_id, execution_date, error_message,retry_count)
+    INSERT INTO airflow_test.air_total_Avg_bill_fail (task_id, dag_id, execution_date, error_message,retry_count)
     VALUES (%s, %s, %s, %s,%s);
     """
     hook.run(insert_sql, parameters=(task_id, dag_id, execution_date, error_message,No_of_retries))
 
 def export_data_staging(**kwargs):
-    pg_hook = PostgresHook(postgres_conn_id='postgres',schema = 'aiimsnew')
+    pg_hook = PostgresHook(postgres_conn_id='Mang_UAT_source_conn',schema = 'aiims_manglagiri')
     destination_hook = PostgresHook(postgres_conn_id='abdm_uat_connection', schema='abdm')
     conn = pg_hook.get_conn()
     cursor = conn.cursor()
     query = ''' 
-            with discharge_cnt as (
-                select  count(hipnum_admno) as Discharge_count,
-                        trunc(hipdt_disdatetime) as Discharge_date
-                from hipt_patadmdisc_dtl
-                where gnum_isvalid=1 
-                and gnum_hospital_code=21917
-                and hipdt_disdatetime is not null 
-                and hipdt_admstatus_code=16
-                and trunc(hipdt_disdatetime) = trunc(sysdate)-1
-                group by trunc(hipdt_disdatetime)
-            ),
-            admission_cnt as (
-                select  count(hipnum_admno) as Admission_count,
-                        trunc(hipdt_admdatetime) as Admission_date
-                from hipt_patadmdisc_dtl
-                where gnum_isvalid=1 
-                and gnum_hospital_code=21917
-                and trunc(hipdt_admdatetime) = trunc(sysdate)-1
-                group by trunc(hipdt_admdatetime)
-            )
-            select A.Admission_date as Date,
-                    A.Admission_count as Admission_count,
-                    D.Discharge_count as Discharge_count,
-                    count(*) over() source_row_count
-            from discharge_cnt D,admission_cnt A
+            SELECT  trunc(PD.hbldt_reciept_date) as Date,
+		            PM.sblstr_paymentmode_name AS Payment_mode,
+                    round(SUM(PD.hblnum_reciept_amt) / EXTRACT(DAY FROM (DATE_TRUNC('month', CURRENT_DATE + INTERVAL '1 month') - INTERVAL '1 day'))) AS Average_Bill_amt,
+                    EXTRACT(YEAR FROM PD.hbldt_reciept_date) AS Year,
+                    EXTRACT(MONTH FROM PD.hbldt_reciept_date) AS Month,
+                    count(*) over() as source_row_count
+            FROM hblt_payment_detail PD, sblt_paymentmode_mst PM
+            WHERE PD.hblnum_payment_mode = PM.sblnum_paymentmode_id
+            AND PD.gnum_hospital_code = 91925
+            AND TRUNC(PD.hbldt_reciept_date) = TRUNC(SYSDATE) - 1
+            AND PM.gnum_isvalid = 1
+            AND PD.gnum_isvalid = 1
+            AND PD.hblnum_payment_status = 1
+            GROUP BY PM.sblstr_paymentmode_name, EXTRACT(YEAR FROM PD.hbldt_reciept_date), EXTRACT(MONTH FROM PD.hbldt_reciept_date),trunc(PD.hbldt_reciept_date);
             '''
     
     cursor.execute(query)
@@ -132,7 +121,7 @@ def export_data_staging(**kwargs):
     dest_cursor = dest_conn.cursor()
 
     insert_sql = '''
-    INSERT INTO airflow_test.air_admdisc_row_count (execution_date,source_row) VALUES (%s,%s);
+    INSERT INTO airflow_test.air_total_Avg_bill_row_count (execution_date,source_row) VALUES (%s,%s);
     '''
     # Execute the insert query on the destination DB
     dest_cursor.execute(insert_sql, (execution_date_str, source_row_count))
@@ -147,7 +136,7 @@ def export_data_staging(**kwargs):
     # writing the data and after the transfer the data is deleted
     with open('/tmp/staging_data.csv', 'w') as f:
         writer = csv.writer(f)
-        writer.writerow(['Date','Admission_count','Discharge_count'])
+        writer.writerow(['Date','Payment_mode','Average_Bill_amt','Year','Month'])
         writer.writerows(rows)
     
     with open('/tmp/staging_data.csv', 'r') as file:
@@ -173,10 +162,10 @@ def load_csv_to_postgres():
         for row in reader:
             print(row)
             # Assuming the CSV columns are in the order: Date, facility_id, Token_count, care_context_count
-            #date, facility_id, token_count, care_context_count = row
+            # date, facility_id, token_count, care_context_count = row
             cursor.execute(
-                'INSERT INTO airflow_test.air_admdisc_count (Date,Admission_count,Discharge_count) VALUES (%s, %s, %s)',
-                (row[0], row[1], row[2])
+                'INSERT INTO airflow_test.air_total_avg_bill (Date,Payment_mode,Average_Bill_amt,Year,Month) VALUES (%s, %s,%s, %s)',
+                (row[0], row[1],row[2],row[3],row[4])
             )
     
     conn.commit()
@@ -186,28 +175,27 @@ def load_csv_to_postgres():
 def print_data(**kwargs):
     destination_rows = ''' 
             SELECT count(*) AS source_row_count
-            FROM airflow_test.air_total_billing
+            FROM airflow_test.air_total_avg_bill
             WHERE date_trunc('day',date) = CURRENT_DATE - 1; 
             '''
 
     source_rows = '''
             SELECT source_row as destination_rows_count
-            FROM airflow_test.air_admdisc_row_count
+            FROM airflow_test.air_total_Avg_bill_row_count
             WHERE date_trunc('day', execution_date) = CURRENT_DATE;
             '''
     
-    dest_hook_dest = PostgresHook(postgres_conn_id='Mang_UAT_source_conn', schema='aiims_manglagiri')
+    dest_hook_dest = PostgresHook(postgres_conn_id='abdm_uat_connection', schema='abdm')
     source_row_count = PostgresHook(postgres_conn_id='abdm_uat_connection', schema='abdm')
 
     dest_row_count = dest_hook_dest.get_records(destination_rows)[0]
     source_row_count = source_row_count.get_records(source_rows)
 
     insert_sql = '''
-    UPDATE airflow_test.air_admdisc_row_count
-    SET destination_row = %s
-    WHERE date_trunc('day', execution_date) = CURRENT_DATE;
-
-'''
+                UPDATE airflow_test.air_total_Avg_bill_row_count
+                SET destination_row = %s
+                WHERE date_trunc('day', execution_date) = CURRENT_DATE;
+                '''
     dest_hook_dest.run(insert_sql, parameters=(dest_row_count,))
 
     if source_row_count!=dest_row_count:
@@ -217,6 +205,7 @@ def print_data(**kwargs):
         logging.info('The Rows are same')
 
     return dest_row_count,source_row_count
+
 
 # Default arguments for the DAG
 default_args = {
@@ -228,7 +217,7 @@ default_args = {
 }
 # Define the DAG
 with DAG(
-        dag_id="Adm_Disc_count",
+        dag_id="Monthly_Avg_bill",
         default_args=default_args,
         description="Transferring the data from UAT to Opensource DB",
         schedule_interval='0 0 * * *',  # Schedule interval set to every day at midnight
